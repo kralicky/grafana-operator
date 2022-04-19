@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -237,7 +236,7 @@ func (r *GrafanaDatasourceReconciler) manageSuccess(datasources []grafanav1alpha
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *GrafanaDatasourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	cmHandler := func(o client.Object) []reconcile.Request {
+	cmHandler := func(ctx context.Context, o client.Object) []reconcile.Request {
 		if o.GetName() != constants.GrafanaDatasourcesConfigMapName {
 			return nil
 		}
@@ -246,7 +245,7 @@ func (r *GrafanaDatasourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		opts := &client.ListOptions{
 			Namespace: ns,
 		}
-		err := r.Client.List(context.Background(), list, opts)
+		err := r.Client.List(ctx, list, opts)
 		if err != nil {
 			return nil
 		}
@@ -261,6 +260,6 @@ func (r *GrafanaDatasourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&integreatlyorgv1alpha1.GrafanaDataSource{}).
-		Watches(&source.Kind{Type: &v1.ConfigMap{}}, handler.EnqueueRequestsFromMapFunc(cmHandler)).
+		Watches(&v1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(cmHandler)).
 		Complete(r)
 }

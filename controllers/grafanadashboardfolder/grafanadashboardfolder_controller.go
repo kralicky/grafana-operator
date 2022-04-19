@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	grafanav1alpha1 "github.com/grafana-operator/grafana-operator/v4/api/integreatly/v1alpha1"
@@ -46,7 +47,7 @@ type GrafanaDashboardFolderReconciler struct {
 	context   context.Context
 	cancel    context.CancelFunc
 	recorder  record.EventRecorder
-	state     common.ControllerState
+	state     atomic.Pointer[common.ControllerState]
 	Log       logr.Logger
 }
 
@@ -64,7 +65,7 @@ func SetupWithManager(mgr ctrl.Manager, r reconcile.Reconciler, namespace string
 	}
 
 	// Watch for changes to primary resource GrafanaDashboard
-	err = c.Watch(&source.Kind{Type: &grafanav1alpha1.GrafanaFolder{}}, &handler.EnqueueRequestForObject{})
+	err = c.Watch(source.Kind(mgr.GetCache(), &grafanav1alpha1.GrafanaFolder{}), &handler.EnqueueRequestForObject{})
 	if err == nil {
 		log.Log.Info("Starting dashboardfolder controller")
 	}
@@ -94,7 +95,8 @@ func SetupWithManager(mgr ctrl.Manager, r reconcile.Reconciler, namespace string
 	go func() {
 		for stateChange := range common.ControllerEvents {
 			// Controller state updated
-			ref.state = stateChange
+			stateChange := stateChange
+			ref.state.Store(&stateChange)
 		}
 	}()
 	return ctrl.NewControllerManagedBy(mgr).
@@ -119,7 +121,7 @@ func (r *GrafanaDashboardFolderReconciler) Reconcile(ctx context.Context, reques
 	logger := r.Log.WithValues(ControllerName, request.NamespacedName)
 
 	// If Grafana is not running there is no need to continue
-	if !r.state.GrafanaReady {
+	if !r.state.Load().GrafanaReady {
 		logger.Info("no grafana instance available")
 		return reconcile.Result{Requeue: false}, nil
 	}
@@ -136,7 +138,7 @@ func (r *GrafanaDashboardFolderReconciler) Reconcile(ctx context.Context, reques
 
 	// Check if the label selectors are available yet. If not then the grafana controller
 	// has not finished initializing and we can't continue. Reschedule for later.
-	if r.state.DashboardSelectors == nil {
+	if r.state.Load().DashboardSelectors == nil {
 		return reconcile.Result{RequeueAfter: config.GetControllerConfig().RequeueDelay}, nil
 	}
 
@@ -201,7 +203,7 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	return &GrafanaDashboardFolderReconciler{
+	rec := &GrafanaDashboardFolderReconciler{
 		Client: mgr.GetClient(),
 		/* #nosec G402 */
 		transport: &http.Transport{
@@ -214,13 +216,14 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 		context:  ctx,
 		cancel:   cancel,
 		recorder: mgr.GetEventRecorderFor(ControllerName),
-		state:    common.ControllerState{},
 	}
+	rec.state.Store(&common.ControllerState{})
+	return rec
 }
 
 // Get an authenticated grafana API client
 func (r *GrafanaDashboardFolderReconciler) getClient() (GrafanaClient, error) {
-	url := r.state.AdminUrl
+	url := r.state.Load().AdminUrl
 	if url == "" {
 		return nil, errors.New("cannot get grafana admin url")
 	}
@@ -235,7 +238,7 @@ func (r *GrafanaDashboardFolderReconciler) getClient() (GrafanaClient, error) {
 		return nil, errors.New("invalid credentials (password)")
 	}
 
-	duration := time.Duration(r.state.ClientTimeout)
+	duration := time.Duration(r.state.Load().ClientTimeout)
 
 	return NewGrafanaClient(url, username, password, r.transport, duration), nil
 }
@@ -260,11 +263,11 @@ func (r *GrafanaDashboardFolderReconciler) manageError(folder *grafanav1alpha1.G
 
 // Test if a given dashboardfolder matches an array of label selectors
 func (r *GrafanaDashboardFolderReconciler) isMatch(item *grafanav1alpha1.GrafanaFolder) bool {
-	if r.state.DashboardSelectors == nil {
+	if r.state.Load().DashboardSelectors == nil {
 		return false
 	}
 
-	match, err := item.MatchesSelectors(r.state.DashboardSelectors)
+	match, err := item.MatchesSelectors(r.state.Load().DashboardSelectors)
 	if err != nil {
 		log.Log.Error(err, "error matching selectors",
 			"item.Namespace", item.Namespace,

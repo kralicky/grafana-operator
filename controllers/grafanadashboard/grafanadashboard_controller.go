@@ -21,9 +21,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -35,18 +35,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 const (
@@ -65,7 +64,7 @@ type GrafanaDashboardReconciler struct {
 	context   context.Context
 	cancel    context.CancelFunc
 	recorder  record.EventRecorder
-	state     common.ControllerState
+	state     atomic.Pointer[common.ControllerState]
 	Log       logr.Logger
 }
 
@@ -85,9 +84,9 @@ func (r *GrafanaDashboardReconciler) Reconcile(ctx context.Context, request ctrl
 	logger := r.Log.WithValues(ControllerName, request.NamespacedName)
 
 	// If Grafana is not running there is no need to continue
-	if !r.state.GrafanaReady {
+	if !r.state.Load().GrafanaReady {
 		logger.Info("no grafana instance available")
-		return reconcile.Result{Requeue: false}, nil
+		return reconcile.Result{RequeueAfter: config.GetControllerConfig().RequeueDelay}, nil
 	}
 
 	getClient, err := r.getClient()
@@ -97,12 +96,12 @@ func (r *GrafanaDashboardReconciler) Reconcile(ctx context.Context, request ctrl
 
 	// Initial request?
 	if request.Name == "" {
-		return r.reconcileDashboards(request, getClient)
+		return ctrl.Result{RequeueAfter: config.GetControllerConfig().RequeueDelay}, nil
 	}
 
 	// Check if the label selectors are available yet. If not then the grafana controller
 	// has not finished initializing and we can't continue. Reschedule for later.
-	if r.state.DashboardSelectors == nil {
+	if r.state.Load().DashboardSelectors == nil {
 		return reconcile.Result{RequeueAfter: config.GetControllerConfig().RequeueDelay}, nil
 	}
 
@@ -113,7 +112,7 @@ func (r *GrafanaDashboardReconciler) Reconcile(ctx context.Context, request ctrl
 		if k8serrors.IsNotFound(err) {
 			// If some dashboard has been deleted, then always re sync the world
 			logger.Info("deleting dashboard", "namespace", request.Namespace, "name", request.Name)
-			return r.reconcileDashboards(request, getClient)
+			return r.reconcileDashboard(instance, request, getClient)
 		}
 		// Error reading the object - requeue the request.
 		return reconcile.Result{}, err
@@ -124,24 +123,24 @@ func (r *GrafanaDashboardReconciler) Reconcile(ctx context.Context, request ctrl
 	if !r.isMatch(cr) {
 		logger.V(1).Info(fmt.Sprintf("dashboard %v/%v found but selectors do not match",
 			cr.Namespace, cr.Name))
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: config.GetControllerConfig().RequeueDelay}, nil
 	}
-	// Otherwise always re sync all dashboards in the namespace
-	return r.reconcileDashboards(request, getClient)
+
+	return r.reconcileDashboard(instance, request, getClient)
 }
 
 // Add creates a new GrafanaDashboard Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager, namespace string) error {
-	return SetupWithManager(mgr, newReconciler(mgr), namespace)
+	return SetupWithManager(mgr, NewReconciler(mgr), namespace)
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) reconcile.Reconciler {
+func NewReconciler(mgr manager.Manager) reconcile.Reconciler {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	return &GrafanaDashboardReconciler{
+	rec := &GrafanaDashboardReconciler{
 		Client: mgr.GetClient(),
 		/* #nosec G402 */
 		transport: &http.Transport{
@@ -154,8 +153,9 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 		context:  ctx,
 		cancel:   cancel,
 		recorder: mgr.GetEventRecorderFor(ControllerName),
-		state:    common.ControllerState{},
 	}
+	rec.state.Store(&common.ControllerState{})
+	return rec
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -164,39 +164,40 @@ func SetupWithManager(mgr ctrl.Manager, r reconcile.Reconciler, namespace string
 	if err != nil {
 		return err
 	}
+	ref := r.(*GrafanaDashboardReconciler) // nolint
 
 	// Watch for changes to primary resource GrafanaDashboard
-	err = c.Watch(&source.Kind{Type: &grafanav1alpha1.GrafanaDashboard{}}, &handler.EnqueueRequestForObject{})
+	err = c.Watch(source.Kind(mgr.GetCache(), &grafanav1alpha1.GrafanaDashboard{}), &handler.EnqueueRequestForObject{})
 	if err == nil {
-		log.Log.Info("Starting dashboard controller")
+		ref.Log.Info("Starting dashboard controller")
 	}
 
-	ref := r.(*GrafanaDashboardReconciler) // nolint
-	ticker := time.NewTicker(config.GetControllerConfig().RequeueDelay)
-	sendEmptyRequest := func() {
-		request := reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: namespace,
-				Name:      "",
-			},
-		}
-		_, err = r.Reconcile(ref.context, request)
-		if err != nil {
-			return
-		}
-	}
+	// ticker := time.NewTicker(config.RequeueDelay)
+	// sendEmptyRequest := func() {
+	// 	request := reconcile.Request{
+	// 		NamespacedName: types.NamespacedName{
+	// 			Namespace: namespace,
+	// 			Name:      "",
+	// 		},
+	// 	}
+	// 	_, err = r.Reconcile(ref.context, request)
+	// 	if err != nil {
+	// 		return
+	// 	}
+	// }
 
-	go func() {
-		for range ticker.C {
-			log.Log.Info("running periodic dashboard resync")
-			sendEmptyRequest()
-		}
-	}()
+	// go func() {
+	// 	for range ticker.C {
+	// 		ref.Log.Info("running periodic dashboard resync")
+	// 		sendEmptyRequest()
+	// 	}
+	// }()
 
 	go func() {
 		for stateChange := range common.ControllerEvents {
 			// Controller state updated
-			ref.state = stateChange
+			stateChange := stateChange
+			ref.state.Store(&stateChange)
 		}
 	}()
 	return ctrl.NewControllerManagedBy(mgr).
@@ -237,7 +238,7 @@ func findUid(knownDashboards []*grafanav1alpha1.GrafanaDashboardRef, item *grafa
 	return ""
 }
 
-func (r *GrafanaDashboardReconciler) reconcileDashboards(request reconcile.Request, grafanaClient GrafanaClient) (reconcile.Result, error) { // nolint
+func (r *GrafanaDashboardReconciler) reconcileDashboard(dashboard *grafanav1alpha1.GrafanaDashboard, request reconcile.Request, grafanaClient GrafanaClient) (reconcile.Result, error) { // nolint
 	// Collect known and namespace dashboards
 	knownDashboards := r.config.GetDashboards(request.Namespace)
 	namespaceDashboards := &grafanav1alpha1.GrafanaDashboardList{}
@@ -262,110 +263,109 @@ func (r *GrafanaDashboardReconciler) reconcileDashboards(request reconcile.Reque
 		}
 	}
 
-	// Process new/updated dashboards
-	for i := range namespaceDashboards.Items {
-		dashboard := namespaceDashboards.Items[i]
-		// Is this a dashboard we care about (matches the label selectors)?
-		if !r.isMatch(&dashboard) {
-			log.Log.Info("dashboard found but selectors do not match",
-				"namespace", dashboard.Namespace, "name", dashboard.Name)
-			continue
-		}
-
-		folderName := dashboard.Namespace
-		if dashboard.Spec.CustomFolderName != "" {
-			folderName = dashboard.Spec.CustomFolderName
-		}
-
-		if dashboard.Status.Error != nil {
-			backoffDuration := 30 * time.Second * time.Duration(math.Pow(2, float64(dashboard.Status.Error.Retries)))
-			retryTime := dashboard.Status.ContentTimestamp.Add(backoffDuration)
-
-			if retryTime.After(time.Now()) {
-				log.Log.V(1).Info("delaying retry of failing dashboard", "folder", folderName, "dashboard", dashboard.Name, "namespace", dashboard.Namespace, "retryTime", retryTime, "backoffDuration", backoffDuration)
-				continue
-			}
-		}
-
-		folder, err := grafanaClient.CreateOrUpdateFolder(folderName)
-		if err != nil {
-			log.Log.Error(err, "failed to get or create namespace folder for dashboard", "folder", folderName, "dashboard", request.Name)
-			r.manageError(&dashboard, err)
-			continue
-		}
-
-		var folderId int64
-		if folder.ID == nil {
-			folderId = 0
-		} else {
-			folderId = *folder.ID
-		}
-
-		// If ContentCacheDuration is not defined at a dashboard level, fallback to the instance-level value
-		if dashboard.Spec.ContentCacheDuration == nil {
-			dashboard.Spec.ContentCacheDuration = &r.state.DashboardContentCacheDuration
-		}
-
-		// Process the dashboard. Use the known hash of an existing dashboard
-		// to determine if an update is required
-		knownHash := findHash(knownDashboards, &dashboard)
-		knownUid := findUid(knownDashboards, &dashboard)
-		pipeline := NewDashboardPipeline(r.Client, &dashboard, r.context)
-		processed, err := pipeline.ProcessDashboard(knownHash, &folderId, folderName, false)
-
-		// Check known dashboards exist on grafana instance and recreate if not
-		if knownUid != "" {
-			response, err := grafanaClient.GetDashboard(knownUid)
-			if err != nil {
-				log.Log.Error(err, "Failed to search Grafana for dashboard")
-			}
-
-			if *response.Dashboard.ID == uint(0) {
-				log.Log.Info(fmt.Sprintf("Dashboard %v (%s) has been deleted via grafana console. Recreating.", dashboard.ObjectMeta.Name, knownUid))
-				processed, err = pipeline.ProcessDashboard(knownHash, &folderId, folderName, true)
-
-				if err != nil {
-					log.Log.Error(err, "cannot process dashboard", "namespace", dashboard.Namespace, "name", dashboard.Name)
-					r.manageError(&dashboard, err)
-					continue
-				}
-			}
-		}
-
-		if err != nil {
-			// log.Log.Error(err, "cannot process dashboard", "namespace", dashboard.Namespace, "name", dashboard.Name)
-			r.manageError(&dashboard, err)
-			continue
-		}
-
-		if processed == nil {
-			r.config.SetPluginsFor(&dashboard)
-			continue
-		}
-		// Check labels only when DashboardNamespaceSelector isnt empty
-		if r.state.DashboardNamespaceSelector != nil {
-			matchesNamespaceLabels, err := r.checkNamespaceLabels(&dashboard)
-			if err != nil {
-				r.manageError(&dashboard, err)
-				continue
-			}
-
-			if !matchesNamespaceLabels {
-				log.Log.Info("dashboard %v skipped because the namespace labels do not match", "dashboard", dashboard.Name)
-				continue
-			}
-		}
-
-		_, err = grafanaClient.CreateOrUpdateDashboard(processed, folderId, folderName)
-		if err != nil {
-			// log.Log.Error(err, "cannot submit dashboard %v/%v", "namespace", dashboard.Namespace, "name", dashboard.Name)
-			r.manageError(&dashboard, err)
-
-			continue
-		}
-
-		r.manageSuccess(&dashboard, &folderId, folderName)
+	// Is this a dashboard we care about (matches the label selectors)?
+	if !r.isMatch(dashboard) {
+		log.Log.Info("dashboard found but selectors do not match",
+			"namespace", dashboard.Namespace, "name", dashboard.Name)
+		return reconcile.Result{}, nil
 	}
+
+	folderName := dashboard.Namespace
+	if dashboard.Spec.CustomFolderName != "" {
+		folderName = dashboard.Spec.CustomFolderName
+	}
+
+	folder, err := grafanaClient.CreateOrUpdateFolder(folderName)
+
+	if err != nil {
+		log.Log.Error(err, "failed to get or create namespace folder for dashboard", "folder", folderName, "dashboard", request.Name)
+		r.manageError(dashboard, err)
+		return reconcile.Result{}, err
+	}
+
+	var folderId int64
+	if folder.ID == nil {
+		folderId = 0
+	} else {
+		folderId = *folder.ID
+	}
+
+	if dashboard.Spec.ContentCacheDuration == nil {
+		dashboard.Spec.ContentCacheDuration = &r.state.Load().DashboardContentCacheDuration
+	}
+
+	// Process the dashboard. Use the known hash of an existing dashboard
+	// to determine if an update is required
+	knownHash := findHash(knownDashboards, dashboard)
+	knownUid := findUid(knownDashboards, dashboard)
+	pipeline := NewDashboardPipeline(r.Client, dashboard, r.context)
+	processed, err := pipeline.ProcessDashboard(knownHash, &folderId, folderName, false)
+
+	// Check known dashboards exist on grafana instance and recreate if not
+	if knownUid != "" {
+		response, err := grafanaClient.GetDashboard(knownUid)
+		if err != nil {
+			log.Log.Error(err, "Failed to search Grafana for dashboard")
+		}
+
+		if *response.Dashboard.ID == uint(0) {
+			log.Log.Info(fmt.Sprintf("Dashboard %v has been deleted via grafana console. Recreating.", dashboard.ObjectMeta.Name))
+			processed, err = pipeline.ProcessDashboard(knownHash, &folderId, folderName, true)
+
+			if err != nil {
+				log.Log.Error(err, "cannot process dashboard", "namespace", dashboard.Namespace, "name", dashboard.Name)
+				r.manageError(dashboard, err)
+				return reconcile.Result{}, err
+			}
+		}
+	}
+
+	if err != nil {
+		log.Log.Error(err, "cannot process dashboard", "namespace", dashboard.Namespace, "name", dashboard.Name)
+		r.manageError(dashboard, err)
+		return reconcile.Result{}, err
+	}
+
+	if processed == nil {
+		r.config.SetPluginsFor(dashboard)
+		return reconcile.Result{}, nil
+	}
+	// Check labels only when DashboardNamespaceSelector isnt empty
+	if r.state.Load().DashboardNamespaceSelector != nil {
+		matchesNamespaceLabels, err := r.checkNamespaceLabels(dashboard)
+		if err != nil {
+			r.manageError(dashboard, err)
+			return reconcile.Result{}, err
+		}
+
+		if !matchesNamespaceLabels {
+			log.Log.Info("dashboard %v skipped because the namespace labels do not match", "dashboard", dashboard.Name)
+			return reconcile.Result{}, nil
+		}
+	}
+
+	resp, err := grafanaClient.CreateOrUpdateDashboard(processed, folderId, folderName)
+	if err != nil {
+		//log.Log.Error(err, "cannot submit dashboard %v/%v", "namespace", dashboard.Namespace, "name", dashboard.Name)
+		r.manageError(dashboard, err)
+
+		return reconcile.Result{}, err
+	}
+
+	if dashboard.Spec.UseAsHomeDashboard {
+		if uid := resp.UID; uid != nil {
+			err = grafanaClient.SetHomeDashboard(*uid)
+			if err != nil {
+				log.Log.Error(err, "cannot set home dashboard", "namespace", dashboard.Namespace, "name", dashboard.Name)
+				r.manageError(dashboard, err)
+				return reconcile.Result{}, err
+			} else {
+				log.Log.Info("home dashboard set", "namespace", dashboard.Namespace, "name", dashboard.Name)
+			}
+		}
+	}
+
+	r.manageSuccess(dashboard, &folderId, folderName)
 
 	for _, dashboard := range dashboardsToDelete {
 		status, err := grafanaClient.DeleteDashboardByUID(dashboard.UID)
@@ -405,7 +405,7 @@ func (r *GrafanaDashboardReconciler) reconcileDashboards(request reconcile.Reque
 
 // Get an authenticated grafana API client
 func (r *GrafanaDashboardReconciler) getClient() (GrafanaClient, error) {
-	url := r.state.AdminUrl
+	url := r.state.Load().AdminUrl
 	if url == "" {
 		return nil, errors.New("cannot get grafana admin url")
 	}
@@ -420,18 +420,18 @@ func (r *GrafanaDashboardReconciler) getClient() (GrafanaClient, error) {
 		return nil, errors.New("invalid credentials (password)")
 	}
 
-	duration := time.Duration(r.state.ClientTimeout)
+	duration := time.Duration(r.state.Load().ClientTimeout)
 
 	return NewGrafanaClient(url, username, password, r.transport, duration), nil
 }
 
 // Test if a given dashboard matches an array of label selectors
 func (r *GrafanaDashboardReconciler) isMatch(item *grafanav1alpha1.GrafanaDashboard) bool {
-	if r.state.DashboardSelectors == nil {
+	if r.state.Load().DashboardSelectors == nil {
 		return false
 	}
 
-	match, err := item.MatchesSelectors(r.state.DashboardSelectors)
+	match, err := item.MatchesSelectors(r.state.Load().DashboardSelectors)
 	if err != nil {
 		log.Log.Error(err, "error matching selectors",
 			"item.Namespace", item.Namespace,
@@ -451,7 +451,7 @@ func (r *GrafanaDashboardReconciler) checkNamespaceLabels(dashboard *grafanav1al
 	if err != nil {
 		return false, err
 	}
-	selector, err := metav1.LabelSelectorAsSelector(r.state.DashboardNamespaceSelector)
+	selector, err := metav1.LabelSelectorAsSelector(r.state.Load().DashboardNamespaceSelector)
 	if err != nil {
 		return false, err
 	}

@@ -84,28 +84,28 @@ func add(mgr manager.Manager, r reconcile.Reconciler, autodetectChannel chan sch
 	}
 
 	// Watch for changes to primary resource Grafana
-	err = c.Watch(&source.Kind{Type: &grafanav1alpha1.Grafana{}}, &handler.EnqueueRequestForObject{})
+	err = c.Watch(source.Kind(mgr.GetCache(), &grafanav1alpha1.Grafana{}), &handler.EnqueueRequestForObject{})
 	if err != nil {
 		return err
 	}
 
-	if err = watchSecondaryResource(c, &v12.Deployment{}); err != nil {
+	if err = watchSecondaryResource(mgr, c, &v12.Deployment{}); err != nil {
 		return err
 	}
 
-	if err = watchSecondaryResource(c, &netv1.Ingress{}); err != nil {
+	if err = watchSecondaryResource(mgr, c, &netv1.Ingress{}); err != nil {
 		return err
 	}
 
-	if err = watchSecondaryResource(c, &v1.ConfigMap{}); err != nil {
+	if err = watchSecondaryResource(mgr, c, &v1.ConfigMap{}); err != nil {
 		return err
 	}
 
-	if err = watchSecondaryResource(c, &v1.Service{}); err != nil {
+	if err = watchSecondaryResource(mgr, c, &v1.Service{}); err != nil {
 		return err
 	}
 
-	if err = watchSecondaryResource(c, &v1.ServiceAccount{}); err != nil {
+	if err = watchSecondaryResource(mgr, c, &v1.ServiceAccount{}); err != nil {
 		return err
 	}
 
@@ -120,7 +120,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler, autodetectChannel chan sch
 
 			// Watch routes if they exist on the cluster
 			if gvk.String() == routev1.SchemeGroupVersion.WithKind(common.RouteKind).String() {
-				if err = watchSecondaryResource(c, &routev1.Route{}); err != nil {
+				if err = watchSecondaryResource(mgr, c, &routev1.Route{}); err != nil {
 					log.Error(err, fmt.Sprintf("error adding secondary watch for %v", common.RouteKind))
 				} else {
 					cfg.AddConfigItem(config.ConfigRouteWatch, true)
@@ -149,11 +149,15 @@ type ReconcileGrafana struct {
 	Recorder record.EventRecorder
 }
 
-func watchSecondaryResource(c controller.Controller, resource client.Object) error {
-	return c.Watch(&source.Kind{Type: resource}, &handler.EnqueueRequestForOwner{
-		IsController: true,
-		OwnerType:    &grafanav1alpha1.Grafana{},
-	})
+func watchSecondaryResource(mgr ctrl.Manager, c controller.Controller, resource client.Object) error {
+	return c.Watch(source.Kind(mgr.GetCache(), resource),
+		handler.EnqueueRequestForOwner(
+			mgr.GetScheme(),
+			mgr.GetRESTMapper(),
+			&grafanav1alpha1.Grafana{},
+			handler.OnlyControllerOwner(),
+		),
+	)
 }
 
 // Reconcile reads that state of the cluster for a Grafana object and makes changes based on the state read

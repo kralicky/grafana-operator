@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -64,7 +65,7 @@ func NewReconciler(mgr manager.Manager) reconcile.Reconciler {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	return &GrafanaNotificationChannelReconciler{
+	rec := &GrafanaNotificationChannelReconciler{
 		client: mgr.GetClient(),
 		transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -75,9 +76,10 @@ func NewReconciler(mgr manager.Manager) reconcile.Reconciler {
 		context:  ctx,
 		cancel:   cancel,
 		recorder: mgr.GetEventRecorderFor(ControllerName),
-		state:    common.ControllerState{},
 		Log:      mgr.GetLogger(),
 	}
+	rec.state.Store(&common.ControllerState{})
+	return rec
 }
 
 // Add creates a new GrafanaNotificationChannel Controller and adds it to the Manager. The Manager will set fields on the Controller
@@ -97,7 +99,7 @@ func SetupWithManager(mgr ctrl.Manager, r reconcile.Reconciler, namespace string
 	}
 
 	// Watch for changes to primary resource GrafanaNotificationChannel
-	err = c.Watch(&source.Kind{Type: &grafanav1alpha1.GrafanaNotificationChannel{}}, &handler.EnqueueRequestForObject{})
+	err = c.Watch(source.Kind(mgr.GetCache(), &grafanav1alpha1.GrafanaNotificationChannel{}), &handler.EnqueueRequestForObject{})
 	if err == nil {
 		log.Log.Info("Starting notificationchannel controller")
 	}
@@ -127,7 +129,8 @@ func SetupWithManager(mgr ctrl.Manager, r reconcile.Reconciler, namespace string
 	go func() {
 		for stateChange := range common.ControllerEvents {
 			// Controller state updated
-			ref.state = stateChange
+			stateChange := stateChange
+			ref.state.Store(&stateChange)
 		}
 	}()
 
@@ -146,7 +149,7 @@ type GrafanaNotificationChannelReconciler struct {
 	context   context.Context
 	cancel    context.CancelFunc
 	recorder  record.EventRecorder
-	state     common.ControllerState
+	state     atomic.Pointer[common.ControllerState]
 	Log       logr.Logger
 }
 
@@ -156,7 +159,7 @@ func (r *GrafanaNotificationChannelReconciler) Reconcile(context context.Context
 	logger := r.Log.WithValues(ControllerName, request.NamespacedName)
 
 	// If Grafana is not running there is no need to continue
-	if !r.state.GrafanaReady {
+	if !r.state.Load().GrafanaReady {
 		logger.Info("no grafana instance available")
 		return reconcile.Result{Requeue: false}, nil
 	}
@@ -174,7 +177,7 @@ func (r *GrafanaNotificationChannelReconciler) Reconcile(context context.Context
 
 	// Check if the label selectors are available yet. If not then the grafana controller
 	// has not finished initializing and we can't continue. Reschedule for later.
-	if r.state.DashboardSelectors == nil {
+	if r.state.Load().DashboardSelectors == nil {
 		return reconcile.Result{RequeueAfter: config.GetControllerConfig().RequeueDelay}, nil
 	}
 
@@ -372,7 +375,7 @@ func (r *GrafanaNotificationChannelReconciler) manageError(notificationchannel *
 
 // Get an authenticated grafana API client
 func (r *GrafanaNotificationChannelReconciler) getClient() (GrafanaClient, error) {
-	url := r.state.AdminUrl
+	url := r.state.Load().AdminUrl
 	if url == "" {
 		return nil, defaultErrors.New("cannot get grafana admin url")
 	}
@@ -387,18 +390,18 @@ func (r *GrafanaNotificationChannelReconciler) getClient() (GrafanaClient, error
 		return nil, defaultErrors.New("invalid credentials (password)")
 	}
 
-	duration := time.Duration(r.state.ClientTimeout)
+	duration := time.Duration(r.state.Load().ClientTimeout)
 
 	return NewGrafanaClient(url, username, password, r.transport, duration), nil
 }
 
 // Test if a given notificationchannel matches an array of label selectors
 func (r *GrafanaNotificationChannelReconciler) isMatch(item *grafanav1alpha1.GrafanaNotificationChannel) bool {
-	if r.state.DashboardSelectors == nil {
+	if r.state.Load().DashboardSelectors == nil {
 		return false
 	}
 
-	match, err := item.MatchesSelectors(r.state.DashboardSelectors)
+	match, err := item.MatchesSelectors(r.state.Load().DashboardSelectors)
 	if err != nil {
 		r.Log.Error(err, fmt.Sprintf("error matching selectors against %v/%v",
 			item.Namespace,

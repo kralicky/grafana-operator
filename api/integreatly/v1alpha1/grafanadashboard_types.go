@@ -57,6 +57,8 @@ type GrafanaDashboardSpec struct {
 	// decided by the `dashboardContentCacheDuration` field in the `Grafana` resource. The default is 0 which
 	// is interpreted as never refetching.
 	ContentCacheDuration *metav1.Duration `json:"contentCacheDuration,omitempty"`
+
+	UseAsHomeDashboard bool `json:"useAsHomeDashboard,omitempty"`
 }
 
 type GrafanaDashboardDatasource struct {

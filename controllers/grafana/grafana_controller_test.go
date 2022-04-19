@@ -66,8 +66,8 @@ func TestReconcileGrafana_getGrafanaAdminUrl(t *testing.T) {
 		state := &common.ClusterState{
 			GrafanaIngress: &netv1.Ingress{
 				Status: netv1.IngressStatus{
-					LoadBalancer: v1.LoadBalancerStatus{
-						Ingress: []v1.LoadBalancerIngress{
+					LoadBalancer: netv1.IngressLoadBalancerStatus{
+						Ingress: []netv1.IngressLoadBalancerIngress{
 							{
 								Hostname: "lbhostname",
 							},
@@ -94,8 +94,8 @@ func TestReconcileGrafana_getGrafanaAdminUrl(t *testing.T) {
 		state := &common.ClusterState{
 			GrafanaIngress: &netv1.Ingress{
 				Status: netv1.IngressStatus{
-					LoadBalancer: v1.LoadBalancerStatus{
-						Ingress: []v1.LoadBalancerIngress{
+					LoadBalancer: netv1.IngressLoadBalancerStatus{
+						Ingress: []netv1.IngressLoadBalancerIngress{
 							{
 								IP: "1.2.3.4",
 							},

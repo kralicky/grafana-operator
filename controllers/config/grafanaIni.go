@@ -202,6 +202,10 @@ func (i *GrafanaIni) parseConfig(config map[string][]string) map[string][]string
 		config = i.cfgAuthLdap(config)
 	}
 
+	if i.cfg.AuthJWT != nil {
+		config = i.cfgAuthJWT(config)
+	}
+
 	if i.cfg.AuthOkta != nil {
 		config = i.cfgAuthOkta(config)
 	}
@@ -540,6 +544,27 @@ func (i *GrafanaIni) cfgAuthLdap(config map[string][]string) map[string][]string
 	items = appendBool(items, "allow_sign_up", i.cfg.AuthLdap.AllowSignUp)
 	items = appendStr(items, "config_file", i.cfg.AuthLdap.ConfigFile)
 	config["auth.ldap"] = items
+
+	return config
+}
+
+func (i *GrafanaIni) cfgAuthJWT(config map[string][]string) map[string][]string {
+	var items []string
+	items = appendBool(items, "enabled", i.cfg.AuthJWT.Enabled)
+	items = appendStr(items, "header_name", i.cfg.AuthJWT.HeaderName)
+	items = appendBool(items, "url_login", i.cfg.AuthJWT.URLLogin)
+	items = appendStr(items, "email_claim", i.cfg.AuthJWT.EmailClaim)
+	items = appendStr(items, "username_claim", i.cfg.AuthJWT.UsernameClaim)
+	items = appendStr(items, "expect_claims", i.cfg.AuthJWT.ExpectClaims)
+	items = appendStr(items, "jwk_set_url", i.cfg.AuthJWT.JWKSetURL)
+	items = appendStr(items, "cache_ttl", i.cfg.AuthJWT.CacheTTL)
+	items = appendStr(items, "key_file", i.cfg.AuthJWT.KeyFile)
+	items = appendStr(items, "jwk_set_file", i.cfg.AuthJWT.JWKSetFile)
+	items = appendBool(items, "auto_sign_up", i.cfg.AuthJWT.AutoSignUp)
+	items = appendStr(items, "role_attribute_path", i.cfg.AuthJWT.RoleAttributePath)
+	items = appendBool(items, "role_attribute_strict", i.cfg.AuthJWT.RoleAttributeStrict)
+	items = appendBool(items, "allow_assign_grafana_admin", i.cfg.AuthJWT.AllowAssignGrafanaAdmin)
+	config["auth.jwt"] = items
 
 	return config
 }

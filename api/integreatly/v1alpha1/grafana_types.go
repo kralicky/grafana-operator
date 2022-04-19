@@ -19,7 +19,7 @@ var (
 // GrafanaSpec defines the desired state of Grafana
 
 type GrafanaSpec struct {
-	Config                     GrafanaConfig            `json:"config"`
+	Config                     GrafanaConfig            `json:"config,omitempty"`
 	Containers                 []v1.Container           `json:"containers,omitempty"`
 	DashboardLabelSelector     []*metav1.LabelSelector  `json:"dashboardLabelSelector,omitempty"`
 	Ingress                    *GrafanaIngress          `json:"ingress,omitempty"`
@@ -121,11 +121,12 @@ type GrafanaDeployment struct {
 	SkipCreateAdminAccount *bool  `json:"skipCreateAdminAccount,omitempty"`
 	PriorityClassName      string `json:"priorityClassName,omitempty"`
 	// +nullable
-	HostNetwork       *bool                      `json:"hostNetwork,omitempty"`
-	ExtraVolumes      []v1.Volume                `json:"extraVolumes,omitempty"`
-	ExtraVolumeMounts []v1.VolumeMount           `json:"extraVolumeMounts,omitempty"`
-	Strategy          *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
-	HttpProxy         *GrafanaHttpProxy          `json:"httpProxy,omitempty"`
+	HostNetwork         *bool                      `json:"hostNetwork,omitempty"`
+	ExtraVolumes        []v1.Volume                `json:"extraVolumes,omitempty"`
+	ExtraVolumeMounts   []v1.VolumeMount           `json:"extraVolumeMounts,omitempty"`
+	ExtraInitContainers []v1.Container             `json:"extraInitContainers,omitempty"`
+	Strategy            *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
+	HttpProxy           *GrafanaHttpProxy          `json:"httpProxy,omitempty"`
 }
 
 // GrafanaHttpProxy provides a means to configure the Grafana deployment
@@ -168,6 +169,7 @@ type GrafanaConfig struct {
 	AuthGithub                    *GrafanaConfigAuthGithub                    `json:"auth.github,omitempty" ini:"auth.github,omitempty"`
 	AuthGitlab                    *GrafanaConfigAuthGitlab                    `json:"auth.gitlab,omitempty" ini:"auth.gitlab,omitempty"`
 	AuthGenericOauth              *GrafanaConfigAuthGenericOauth              `json:"auth.generic_oauth,omitempty" ini:"auth.generic_oauth,omitempty"`
+	AuthJWT                       *GrafanaConfigAuthJWT                       `json:"auth.jwt,omitempty" ini:"auth.jwt,omitempty"`
 	AuthOkta                      *GrafanaConfigAuthOkta                      `json:"auth.okta,omitempty" ini:"auth.okta,omitempty"`
 	AuthLdap                      *GrafanaConfigAuthLdap                      `json:"auth.ldap,omitempty" ini:"auth.ldap,omitempty"`
 	AuthProxy                     *GrafanaConfigAuthProxy                     `json:"auth.proxy,omitempty" ini:"auth.proxy,omitempty"`
@@ -440,6 +442,28 @@ type GrafanaConfigAuthGenericOauth struct {
 	TLSClientCert         string `json:"tls_client_cert,omitempty" ini:"tls_client_cert,omitempty"`
 	TLSClientKey          string `json:"tls_client_key,omitempty" ini:"tls_client_key,omitempty"`
 	TLSClientCa           string `json:"tls_client_ca,omitempty" ini:"tls_auth_ca,omitempty"`
+}
+
+type GrafanaConfigAuthJWT struct {
+	// +nullable
+	Enabled    *bool  `json:"enabled,omitempty" ini:"enabled"`
+	HeaderName string `json:"header_name,omitempty" ini:"header_name,omitempty"`
+	// +nullable
+	URLLogin      *bool  `json:"url_login,omitempty" ini:"url_login,omitempty"`
+	EmailClaim    string `json:"email_claim,omitempty" ini:"email_claim,omitempty"`
+	UsernameClaim string `json:"username_claim,omitempty" ini:"username_claim,omitempty"`
+	ExpectClaims  string `json:"expect_claims,omitempty" ini:"expect_claims,omitempty"`
+	JWKSetURL     string `json:"jwk_set_url,omitempty" ini:"jwk_set_url,omitempty"`
+	CacheTTL      string `json:"cache_ttl,omitempty" ini:"cache_ttl,omitempty"`
+	KeyFile       string `json:"key_file,omitempty" ini:"key_file,omitempty"`
+	JWKSetFile    string `json:"jwk_set_file,omitempty" ini:"jwk_set_file,omitempty"`
+	// +nullable
+	AutoSignUp        *bool  `json:"auto_sign_up,omitempty" ini:"auto_sign_up"`
+	RoleAttributePath string `json:"role_attribute_path,omitempty" ini:"role_attribute_path,omitempty"`
+	// +nullable
+	RoleAttributeStrict *bool `json:"role_attribute_strict,omitempty" ini:"role_attribute_strict,omitempty"`
+	// +nullable
+	AllowAssignGrafanaAdmin *bool `json:"allow_assign_grafana_admin,omitempty" ini:"allow_assign_grafana_admin,omitempty"`
 }
 
 type GrafanaConfigAuthOkta struct {

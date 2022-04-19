@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -21,6 +22,7 @@ const (
 	CreateOrUpdateFolderUrl    = "%v/api/folders"
 	DeleteFolderByUIDUrl       = "%v/api/folders/%v"
 	GetFolderByIDUrl           = "%v/api/folders/id/%v"
+	PreferencesUrl             = "%v/api/org/preferences"
 )
 
 const (
@@ -75,9 +77,14 @@ type GrafanaFolderResponse struct {
 	UID   string `json:"uid"`
 }
 
+type PreferencesRequest struct {
+	HomeDashboardUID string `json:"homeDashboardUID"`
+}
+
 type GrafanaClient interface {
 	CreateOrUpdateDashboard(dashboard []byte, folderId int64, folderName string) (GrafanaResponse, error)
 	DeleteDashboardByUID(UID string) (GrafanaResponse, error)
+	SetHomeDashboard(UID string) error
 	CreateOrUpdateFolder(folderName string) (GrafanaFolderResponse, error)
 	DeleteFolder(folderID *int64) error
 	SafeToDelete(dashboards []*v1alpha1.GrafanaDashboardRef, folderID *int64) bool
@@ -151,6 +158,51 @@ func (r *GrafanaClientImpl) GetDashboard(UID string) (GrafanaDashboardResponse, 
 	err = json.Unmarshal(data, &response)
 
 	return response, err
+}
+
+func (r *GrafanaClientImpl) SetHomeDashboard(UID string) error {
+	rawURL := fmt.Sprintf(PreferencesUrl, r.url)
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+
+	prefsReq := PreferencesRequest{
+		HomeDashboardUID: UID,
+	}
+
+	parsed.User = url.UserPassword(r.user, r.password)
+	req, err := http.NewRequest("PATCH", parsed.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	setHeaders(req)
+
+	data, err := json.Marshal(prefsReq)
+	if err != nil {
+		return err
+	}
+
+	req.Body = ioutil.NopCloser(bytes.NewReader(data))
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf(
+			"error setting default dashboard, expected status 200 but got %v: %v",
+			resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 func (r *GrafanaClientImpl) getAllFolders() ([]GrafanaFolderResponse, error) {
@@ -246,19 +298,17 @@ func (r *GrafanaClientImpl) CreateOrUpdateFolder(folderInputName string) (Grafan
 	}
 	defer resp.Body.Close()
 
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return response, err
+	}
+
 	if resp.StatusCode != 200 {
 		if resp.StatusCode == 503 {
 			return GrafanaFolderResponse{}, nil
 		} else {
-			return response, fmt.Errorf(
-				"error creating folder, expected status 200 but got %v",
-				resp.StatusCode)
+			return response, fmt.Errorf("error creating folder: %s", string(data))
 		}
-	}
-
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return response, err
 	}
 
 	err = json.Unmarshal(data, &response)
@@ -307,15 +357,13 @@ func (r *GrafanaClientImpl) CreateOrUpdateDashboard(dashboard []byte, folderID i
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 && resp.StatusCode != 503 {
-		return response, fmt.Errorf(
-			"error creating dashboard, expected status 200 but got %v",
-			resp.StatusCode)
-	}
-
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return response, err
+	}
+
+	if resp.StatusCode != 200 && resp.StatusCode != 503 {
+		return response, fmt.Errorf("error creating dashboard: %s", string(data))
 	}
 
 	err = json.Unmarshal(data, &response)
