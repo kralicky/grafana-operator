@@ -10,7 +10,7 @@ const (
 	GrafanaConfigFileName                   = "grafana.ini"
 	GrafanaIngressName                      = "grafana-ingress"
 	GrafanaRouteName                        = "grafana-route"
-	GrafanaDeploymentName                   = "grafana-deployment"
+	GrafanaDeploymentName                   = "grafana"
 	GrafanaPluginsVolumeName                = "grafana-plugins"
 	GrafanaInitContainerName                = "grafana-plugins-init"
 	GrafanaProvisionPluginVolumeName        = "grafana-provision-plugins"

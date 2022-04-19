@@ -245,19 +245,17 @@ func (r *GrafanaClientImpl) CreateOrUpdateFolder(folderInputName string) (Grafan
 	}
 	defer resp.Body.Close()
 
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return response, err
+	}
+
 	if resp.StatusCode != 200 {
 		if resp.StatusCode == 503 {
 			return GrafanaFolderResponse{}, nil
 		} else {
-			return response, fmt.Errorf(
-				"error creating folder, expected status 200 but got %v",
-				resp.StatusCode)
+			return response, fmt.Errorf("error creating folder: %s", string(data))
 		}
-	}
-
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return response, err
 	}
 
 	err = json.Unmarshal(data, &response)
@@ -306,15 +304,13 @@ func (r *GrafanaClientImpl) CreateOrUpdateDashboard(dashboard []byte, folderID i
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 && resp.StatusCode != 503 {
-		return response, fmt.Errorf(
-			"error creating dashboard, expected status 200 but got %v",
-			resp.StatusCode)
-	}
-
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return response, err
+	}
+
+	if resp.StatusCode != 200 && resp.StatusCode != 503 {
+		return response, fmt.Errorf("error creating dashboard: %s", string(data))
 	}
 
 	err = json.Unmarshal(data, &response)

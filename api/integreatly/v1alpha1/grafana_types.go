@@ -19,7 +19,7 @@ var (
 // GrafanaSpec defines the desired state of Grafana
 
 type GrafanaSpec struct {
-	Config                     GrafanaConfig            `json:"config"`
+	Config                     GrafanaConfig            `json:"config,omitempty"`
 	Containers                 []v1.Container           `json:"containers,omitempty"`
 	DashboardLabelSelector     []*metav1.LabelSelector  `json:"dashboardLabelSelector,omitempty"`
 	Ingress                    *GrafanaIngress          `json:"ingress,omitempty"`
@@ -113,11 +113,12 @@ type GrafanaDeployment struct {
 	SkipCreateAdminAccount *bool  `json:"skipCreateAdminAccount,omitempty"`
 	PriorityClassName      string `json:"priorityClassName,omitempty"`
 	// +nullable
-	HostNetwork       *bool                      `json:"hostNetwork,omitempty"`
-	ExtraVolumes      []v1.Volume                `json:"extraVolumes,omitempty"`
-	ExtraVolumeMounts []v1.VolumeMount           `json:"extraVolumeMounts,omitempty"`
-	Strategy          *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
-	HttpProxy         *GrafanaHttpProxy          `json:"httpProxy,omitempty"`
+	HostNetwork         *bool                      `json:"hostNetwork,omitempty"`
+	ExtraVolumes        []v1.Volume                `json:"extraVolumes,omitempty"`
+	ExtraVolumeMounts   []v1.VolumeMount           `json:"extraVolumeMounts,omitempty"`
+	ExtraInitContainers []v1.Container             `json:"extraInitContainers,omitempty"`
+	Strategy            *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
+	HttpProxy           *GrafanaHttpProxy          `json:"httpProxy,omitempty"`
 }
 
 // GrafanaHttpProxy provides a means to configure the Grafana deployment

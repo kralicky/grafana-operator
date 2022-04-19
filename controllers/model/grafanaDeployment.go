@@ -478,7 +478,7 @@ func getLivenessProbe(cr *v1alpha1.Grafana, delay, timeout, failure int32) *v13.
 	}
 
 	return &v13.Probe{
-		Handler: v13.Handler{
+		ProbeHandler: v13.ProbeHandler{
 			HTTPGet: &v13.HTTPGetAction{
 				Path:   constants.GrafanaHealthEndpoint,
 				Port:   intstr.FromInt(GetGrafanaPort(cr)),
@@ -523,7 +523,7 @@ func getReadinessProbe(cr *v1alpha1.Grafana, delay, timeout, failure int32) *v13
 	}
 
 	return &v13.Probe{
-		Handler: v13.Handler{
+		ProbeHandler: v13.ProbeHandler{
 			HTTPGet: &v13.HTTPGetAction{
 				Path:   constants.GrafanaHealthEndpoint,
 				Port:   intstr.FromInt(GetGrafanaPort(cr)),
@@ -672,7 +672,9 @@ func getInitContainers(cr *v1alpha1.Grafana, plugins string) []v13.Container {
 
 	var volumeName = constants.GrafanaPluginsVolumeName
 
+	var extraInitContainers []v13.Container
 	if cr.Spec.Deployment != nil {
+		extraInitContainers = cr.Spec.Deployment.ExtraInitContainers
 		for _, item := range cr.Spec.Deployment.ExtraVolumeMounts {
 			if item.MountPath == config.GrafanaPluginsPath {
 				volumeName = item.Name
@@ -680,24 +682,22 @@ func getInitContainers(cr *v1alpha1.Grafana, plugins string) []v13.Container {
 		}
 	}
 
-	return []v13.Container{
-		{
-			Name:      constants.GrafanaInitContainerName,
-			Image:     image,
-			Env:       envVars,
-			Resources: getInitResources(cr),
-			VolumeMounts: []v13.VolumeMount{
-				{
-					Name:      volumeName,
-					ReadOnly:  false,
-					MountPath: "/opt/plugins",
-				},
+	return append(extraInitContainers, v13.Container{
+		Name:      constants.GrafanaInitContainerName,
+		Image:     image,
+		Env:       envVars,
+		Resources: getInitResources(cr),
+		VolumeMounts: []v13.VolumeMount{
+			{
+				Name:      volumeName,
+				ReadOnly:  false,
+				MountPath: "/opt/plugins",
 			},
-			TerminationMessagePath:   "/dev/termination-log",
-			TerminationMessagePolicy: "File",
-			ImagePullPolicy:          "IfNotPresent",
 		},
-	}
+		TerminationMessagePath:   "/dev/termination-log",
+		TerminationMessagePolicy: "File",
+		ImagePullPolicy:          "IfNotPresent",
+	})
 }
 
 func getDeploymentSpec(cr *v1alpha1.Grafana, annotations map[string]string, configHash, plugins, dsHash string) v1.DeploymentSpec {

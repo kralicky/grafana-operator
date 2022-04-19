@@ -1855,6 +1855,13 @@ func (in *GrafanaDeployment) DeepCopyInto(out *GrafanaDeployment) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.ExtraInitContainers != nil {
+		in, out := &in.ExtraInitContainers, &out.ExtraInitContainers
+		*out = make([]v1.Container, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.Strategy != nil {
 		in, out := &in.Strategy, &out.Strategy
 		*out = new(appsv1.DeploymentStrategy)
